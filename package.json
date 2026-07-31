@@ -1,0 +1,18 @@
+{
+  "name": "backend-justina",
+  "version": "1.0.0",
+  "description": "servidor backend y API con base de datos para tienda de ropa e-commerce",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "author": "Vanesa Vera",
+  "license": "ISC",
+  "keywords": [],
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "sqlite3": "^6.0.1"
+  }
+}
