@@ -82,7 +82,27 @@ async function crearTablas() {
       );
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS categorias (
+        id SERIAL PRIMARY KEY,
+        nombre VARCHAR(100) UNIQUE NOT NULL
+      );
+    `);
+
+    // Insertamos categorías por defecto solo si no existen
+    const categoriasIniciales = [
+      'Sweaters', 'Vestidos', 'Tops', 'Conjuntos', 
+      'Calzas', 'Remeras', 'Pantalones', 'Buzos', "Jeans", "Abrigos", "Accesorios"
+    ];
+    for (const cat of categoriasIniciales) {
+      await pool.query(
+        'INSERT INTO categorias (nombre) VALUES ($1) ON CONFLICT (nombre) DO NOTHING;',
+        [cat]
+      );
+    }
+
         console.log('Tablas y estructura de stock creadas en PostgreSQL.');
+        console.log('Tabla "categorias" verificada/creada con sus datos iniciales.');
     } catch (err) {
         console.error('Error creando tablas:', err.message);
     }
@@ -196,11 +216,49 @@ app.delete('/api/productos/:id', async (req, res) => {
     }
 });
 
+// GET: Obtener todas las categorías ordenadas alfabéticamente
+app.get('/api/categorias', async (req, res) => {
+  try {
+    const respuesta = await pool.query('SELECT * FROM categorias ORDER BY nombre ASC');
+    res.json(respuesta.rows);
+  } catch (err) {
+    res.status(500).json({ error: "Error al obtener categorías." });
+  }
+});
+
+// POST: Crear una categoría nueva
+app.post('/api/categorias', async (req, res) => {
+  const { nombre } = req.body;
+
+  if (!nombre || !nombre.trim()) {
+    return res.status(400).json({ error: "El nombre de la categoría no puede estar vacío." });
+  }
+
+  try {
+    const respuesta = await pool.query(
+      'INSERT INTO categorias (nombre) VALUES ($1) RETURNING *;',
+      [nombre.trim()]
+    );
+    res.status(201).json({
+      mensaje: "¡Categoría creada!",
+      categoria: respuesta.rows[0]
+    });
+  } catch (err) {
+    // Código 23505 = Nombre duplicado en PostgreSQL
+    if (err.code === '23505') {
+      res.status(400).json({ error: "Esa categoría ya existe." });
+    } else {
+      res.status(500).json({ error: "Error al crear categoría." });
+    }
+  }
+});
+
+
 
 // USUARIOS
 
 // ==========================================
-// 2. RUTA SEED: Crear tu cuenta de dueña administradora
+// 2. Creación de usuario admin
 // ==========================================
 app.get('/api/seed-admin', async (req, res) => {
   try {
