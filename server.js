@@ -7,7 +7,7 @@ const path = require('path');
 const app = express();
 const PUERTO = 3000;
 
-// Permite que el frontend le haga pedidos a tu backend
+// Permite que el frontend le haga pedidos al back
 app.use(cors());
 app.use(express.json());
 
@@ -29,8 +29,8 @@ const upload = multer({ storage: storage });
 
 // CONEXIÓN A LA BASE DE DATOS POSTGRESQL LOCAL
 const pool = new Pool({
-  user: 'postgres',        // Tu usuario local de PostgreSQL
-  host: 'localhost',       // Tu computadora local
+  user: 'postgres',        // Usuario local de PostgreSQL
+  host: 'localhost',       // Computadora local
   database: 'tienda_db',   // El nombre de la base de datos que vas a usar
   password: 'postgres27', // Contraseña de postgreSQL
   port: 5432,              // Puerto por defecto de PostgreSQL
@@ -51,6 +51,8 @@ pool.connect((err, client, release) => {
 
 async function crearTablas() {
   try {
+
+        // TABLA DE USUARIOS
     await pool.query(`
       CREATE TABLE IF NOT EXISTS usuarios (
         id SERIAL PRIMARY KEY,
@@ -61,6 +63,7 @@ async function crearTablas() {
       );
     `);
 
+        // TABLA DE PRODUCTOS
     await pool.query(`
       CREATE TABLE IF NOT EXISTS productos (
         id SERIAL PRIMARY KEY,
@@ -90,7 +93,7 @@ async function crearTablas() {
         stock INTEGER NOT NULL DEFAULT 0
       );
     `);
-
+    // TABLA DE CATEGORIAS
     await pool.query(`
       CREATE TABLE IF NOT EXISTS categorias (
         id SERIAL PRIMARY KEY,
@@ -110,7 +113,7 @@ async function crearTablas() {
       );
     }
 
-    // 1. TABLA PEDIDOS
+    // TABLA PEDIDOS
     await pool.query(`
       CREATE TABLE IF NOT EXISTS pedidos (
         id SERIAL PRIMARY KEY,
@@ -125,7 +128,7 @@ async function crearTablas() {
       );
     `);
 
-    // 2. TABLA DETALLE_PEDIDOS (Renglón por cada prenda comprada)
+    // TABLA DETALLE_PEDIDOS (Renglón por cada prenda comprada)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS detalle_pedidos (
         id SERIAL PRIMARY KEY,
@@ -151,9 +154,6 @@ async function crearTablas() {
       );
     `);
 
-    console.log('Tablas y estructura de stock creadas en PostgreSQL.');
-    console.log('Tabla "categorias" verificada/creada con sus datos iniciales.');
-    console.log('Tablas "pedidos" y "detalle_pedidos" verificadas/creadas con éxito.');
   } catch (err) {
     console.error('Error creando tablas:', err.message);
   }
@@ -162,10 +162,10 @@ async function crearTablas() {
 
 // ENDPOINTS / RUTAS DE LA API 
 
-//PRODUCTOS Y VARIANTES
+//----------------------------------------------------------------------------------------------------PRODUCTOS Y VARIANTES
 
 // ==========================================
-// 1. GET: Obtener todos los productos CON sus variantes y stock
+// GET: Obtener todos los productos CON sus variantes y stock
 // ==========================================
 app.get('/api/productos', async (req, res) => {
   try {
@@ -194,9 +194,8 @@ app.get('/api/productos', async (req, res) => {
 });
 
 // ==========================================
-// 2. POST: Cargar producto con sus variantes
+// POST: Cargar producto con sus variantes
 // ==========================================
-// Cambiamos upload.single('foto') por upload.array('fotos', 5)
 app.post('/api/productos', upload.array('fotos', 5), async (req, res) => {
   const { nombre, precio, categoria, variantes } = req.body;
   
@@ -244,23 +243,24 @@ app.post('/api/productos', upload.array('fotos', 5), async (req, res) => {
 });
 
 // ==========================================
-// 3. PUT: Actualizar precio, datos o stock
+// PUT: Actualizar precio, datos, stock y orden de fotos
 // ==========================================
-app.put('/api/productos/:id', async (req, res) => {
+app.put('/api/productos/:id', upload.array('fotosNuevas', 5), async (req, res) => {
   const { id } = req.params;
-  const { nombre, precio, categoria, variantes } = req.body;
+  const { nombre, precio, categoria, variantes, fotosExistentes } = req.body;
 
   try {
-    // Actualizamos datos generales
+    // 1. Actualizamos datos generales del producto
     await pool.query(
       'UPDATE productos SET nombre = $1, precio = $2, categoria = $3 WHERE id = $4',
       [nombre, precio, categoria, id]
     );
 
-    // Si mandaron variantes para actualizar, borramos las viejas de ese id y cargamos las nuevas
+    // 2. Si mandaron variantes para actualizar (Re-stock)
     if (variantes) {
+      const listaVariantes = typeof variantes === 'string' ? JSON.parse(variantes) : variantes;
       await pool.query('DELETE FROM variantes WHERE producto_id = $1', [id]);
-      for (const v of variantes) {
+      for (const v of listaVariantes) {
         await pool.query(
           'INSERT INTO variantes (producto_id, talle, color, stock) VALUES ($1, $2, $3, $4)',
           [id, v.talle, v.color, parseInt(v.stock)]
@@ -268,14 +268,48 @@ app.put('/api/productos/:id', async (req, res) => {
       }
     }
 
-    res.json({ mensaje: "Producto actualizado correctamente." });
+    // 3. Actualización del ORDEN de las fotos y nuevas cargas
+    let listaFotosFinal = [];
+
+    // A. Fotos que decidieron dejar/reordenar en el modal
+    if (fotosExistentes) {
+      const parsedExistentes = typeof fotosExistentes === 'string' 
+        ? JSON.parse(fotosExistentes) 
+        : fotosExistentes;
+      listaFotosFinal = [...parsedExistentes];
+    }
+
+    // B. Fotos nuevas que hayan subido en este momento
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        listaFotosFinal.push(`imagenes/${file.filename}`);
+      }
+    }
+
+    // C. Si tenemos fotos en la lista, actualizamos la tabla y la portada
+    if (listaFotosFinal.length > 0) {
+      // Reemplazamos la imagen de portada en la tabla productos (la posición 0)
+      await pool.query('UPDATE productos SET imagen = $1 WHERE id = $2', [listaFotosFinal[0], id]);
+
+      // Regeneramos las filas en imagenes_producto para respetar el nuevo orden
+      await pool.query('DELETE FROM imagenes_producto WHERE producto_id = $1', [id]);
+      for (const urlFoto of listaFotosFinal) {
+        await pool.query(
+          'INSERT INTO imagenes_producto (producto_id, url) VALUES ($1, $2)',
+          [id, urlFoto]
+        );
+      }
+    }
+
+    res.json({ mensaje: "Producto, stock e imágenes actualizados correctamente." });
   } catch (err) {
+    console.error("Error actualizando producto:", err);
     res.status(500).json({ error: "Error actualizando el producto." });
   }
 });
 
 // ==========================================
-// 4. DELETE: Borrar un producto (y sus variantes por CASCADE)
+// DELETE: Borrar un producto 
 // ==========================================
 app.delete('/api/productos/:id', async (req, res) => {
   const { id } = req.params;
@@ -287,7 +321,12 @@ app.delete('/api/productos/:id', async (req, res) => {
   }
 });
 
+
+//--------------------------------------------------------------------------------------------CATEGORIAS
+
+// ============================================================
 // GET: Obtener todas las categorías ordenadas alfabéticamente
+// ============================================================
 app.get('/api/categorias', async (req, res) => {
   try {
     const respuesta = await pool.query('SELECT * FROM categorias ORDER BY nombre ASC');
@@ -296,8 +335,9 @@ app.get('/api/categorias', async (req, res) => {
     res.status(500).json({ error: "Error al obtener categorías." });
   }
 });
-
+// ==========================================
 // POST: Crear una categoría nueva
+// ==========================================
 app.post('/api/categorias', async (req, res) => {
   const { nombre } = req.body;
 
@@ -315,7 +355,6 @@ app.post('/api/categorias', async (req, res) => {
       categoria: respuesta.rows[0]
     });
   } catch (err) {
-    // Código 23505 = Nombre duplicado en PostgreSQL
     if (err.code === '23505') {
       res.status(400).json({ error: "Esa categoría ya existe." });
     } else {
@@ -326,10 +365,10 @@ app.post('/api/categorias', async (req, res) => {
 
 
 
-// USUARIOS
+// -------------------------------------------------------------------------------------------USUARIOS
 
 // ==========================================
-// 2. Creación de usuario admin
+//  Creación de usuario admin
 // ==========================================
 app.get('/api/seed-admin', async (req, res) => {
   try {
@@ -346,14 +385,13 @@ app.get('/api/seed-admin', async (req, res) => {
 });
 
 // ==========================================
-// 3. RUTA POST: Login de usuario
+// POST: Login de usuario
 // ==========================================
 
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    // Buscamos el usuario en PostgreSQL por email y contraseña
     const consulta = await pool.query(
       'SELECT id, nombre, email, rol FROM usuarios WHERE email = $1 AND password = $2',
       [email, password]
@@ -363,7 +401,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: "Correo o contraseña incorrectos." });
     }
 
-    // Devolvemos el usuario (su objeto incluirá rol: 'admin' o rol: 'cliente')
     res.json({
       mensaje: "¡Inicio de sesión exitoso!",
       usuario: consulta.rows[0]
@@ -373,6 +410,10 @@ app.post('/api/login', async (req, res) => {
     res.status(500).json({ error: "Error interno del servidor al iniciar sesión." });
   }
 });
+
+// ==========================================
+// POST: Registro de usuario
+// ==========================================
 
 app.post('/api/usuarios/registro', async (req, res) => {
   const { nombre, email, password } = req.body;
@@ -398,8 +439,10 @@ app.post('/api/usuarios/registro', async (req, res) => {
   }
 });
 
-
+// ==========================================
 // PUT: Modificar nombre o contraseña del cliente
+// ==========================================
+
 app.put('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
   const { nombre, password } = req.body;
@@ -417,7 +460,11 @@ app.put('/api/usuarios/:id', async (req, res) => {
   }
 });
 
+
+// ==========================================================
 // DELETE: Eliminar cuenta de usuario
+// ==========================================================
+
 app.delete('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
   try {
@@ -428,11 +475,12 @@ app.delete('/api/usuarios/:id', async (req, res) => {
   }
 });
 
+//------------------------------------------------------------------------------------------- DIRECCIONES
+
 // ==========================================================
-// 3. ENDPOINTS PARA DIRECCIONES
+// GET: Obtener direcciones guardadas de un cliente
 // ==========================================================
 
-// GET: Obtener direcciones guardadas de un cliente
 app.get('/api/direcciones/:usuario_id', async (req, res) => {
   try {
     const respuesta = await pool.query(
@@ -445,7 +493,11 @@ app.get('/api/direcciones/:usuario_id', async (req, res) => {
   }
 });
 
+
+// ==========================================================
 // POST: Guardar una nueva dirección
+// ==========================================================
+
 app.post('/api/direcciones', async (req, res) => {
   const { usuario_id, calle_numero, codigo_postal, localidad, provincia, pais } = req.body;
   try {
@@ -460,8 +512,11 @@ app.post('/api/direcciones', async (req, res) => {
   }
 });
 
+
+//-------------------------------------------------------------------------------------------PEDIDOS
+
 // ==========================================================
-// 4. ENDPOINT: VER PEDIDOS DEL CLIENTE ("MIS PEDIDOS")
+//GET : VER PEDIDOS DEL CLIENTE ("MIS PEDIDOS")
 // ==========================================================
 app.get('/api/mis-pedidos/:usuario_id', async (req, res) => {
   try {
@@ -483,10 +538,9 @@ app.get('/api/mis-pedidos/:usuario_id', async (req, res) => {
 });
 
 // ==========================================================
-// --- ENDPOINTS DE PEDIDOS Y CONTROL DE STOCK ---
+// POST: Crear un nuevo pedido y DESCONTAR EL STOCK automáticamente
 // ==========================================================
 
-// 1. POST: Crear un nuevo pedido y DESCONTAR EL STOCK automáticamente
 app.post('/api/pedidos', async (req, res) => {
   const { usuario_id, nombre, email, domicilio, total, items } = req.body;
 
@@ -498,7 +552,7 @@ app.post('/api/pedidos', async (req, res) => {
   const client = await pool.connect();
 
   try {
-    await client.query('BEGIN'); // Empezamos la transacción
+    await client.query('BEGIN'); 
 
     // A. Guardamos la cabecera del pedido
     const resPedido = await client.query(
@@ -526,7 +580,7 @@ app.post('/api/pedidos', async (req, res) => {
       );
     }
 
-    await client.query('COMMIT'); // Confirmamos todos los cambios en PostgreSQL
+    await client.query('COMMIT'); 
     res.status(201).json({ mensaje: "¡Pedido registrado y stock actualizado!", pedido_id: idPedido });
 
   } catch (error) {
@@ -538,7 +592,11 @@ app.post('/api/pedidos', async (req, res) => {
   }
 });
 
-// 2. GET: Obtener todos los pedidos (Para el Panel de Administración)
+
+// ==================================================================
+// GET: Obtener todos los pedidos (Para el Panel de Administración)
+// ==================================================================
+
 app.get('/api/pedidos', async (req, res) => {
   try {
     // Obtenemos los pedidos generales ordenados por fecha más reciente
@@ -557,7 +615,11 @@ app.get('/api/pedidos', async (req, res) => {
   }
 });
 
-// 3. PUT: Actualizar estados del pedido y de pago (Desde la web del Admin)
+
+// ==========================================================
+// Actualizar estados del pedido y de pago (Desde la web del Admin)
+// ==========================================================
+
 app.put('/api/pedidos/:id/estado', async (req, res) => {
   const { id } = req.params;
   const { estado_pedido, estado_pago } = req.body;
@@ -573,7 +635,9 @@ app.put('/api/pedidos/:id/estado', async (req, res) => {
   }
 });
 
-// ENCENDER EL SERVIDOR
+
+
+// ---------------------------------------------------------------------------------ENCENDER EL SERVIDOR
 app.listen(PUERTO, () => {
   console.log(`Servidor backend corriendo en http://localhost:${PUERTO}`);
 });
