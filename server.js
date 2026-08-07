@@ -154,6 +154,17 @@ async function crearTablas() {
       );
     `);
 
+        // TABLA DE FAVORITOS
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS favoritos (
+        id SERIAL PRIMARY KEY,
+        usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+        producto_id INTEGER NOT NULL REFERENCES productos(id) ON DELETE CASCADE,
+        fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uniq_fav UNIQUE (usuario_id, producto_id)
+    );
+    `);
+
   } catch (err) {
     console.error('Error creando tablas:', err.message);
   }
@@ -461,6 +472,27 @@ app.put('/api/usuarios/:id', async (req, res) => {
 });
 
 
+// POST: Verificar si la contraseña del usuario es correcta
+app.post('/api/usuarios/verificar-password', async (req, res) => {
+    const { usuario_id, password } = req.body;
+    try {
+        const result = await pool.query('SELECT password FROM usuarios WHERE id = $1', [usuario_id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: "Usuario no encontrado." });
+        }
+
+        const passwordDB = result.rows[0].password;
+        // Si la clave coincide (si usás bcrypt, acá iría bcrypt.compare)
+        if (passwordDB === password) {
+            res.json({ valido: true });
+        } else {
+            res.status(401).json({ error: "Contraseña incorrecta." });
+        }
+    } catch (err) {
+        res.status(500).json({ error: "Error al verificar seguridad." });
+    }
+});
+
 // ==========================================================
 // DELETE: Eliminar cuenta de usuario
 // ==========================================================
@@ -510,6 +542,37 @@ app.post('/api/direcciones', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: "Error al guardar la dirección." });
   }
+});
+
+// ==========================================================
+// PUT: Editar dirección existente 
+// ==========================================================
+
+app.put('/api/direcciones/:id', async (req, res) => {
+    const { id } = req.params;
+    const { calle_numero, codigo_postal, localidad, provincia, pais } = req.body;
+    try {
+        await pool.query(
+            'UPDATE direcciones SET calle_numero = $1, codigo_postal = $2, localidad = $3, provincia = $4, pais = $5 WHERE id = $6',
+            [calle_numero, codigo_postal, localidad, provincia, pais, id]
+        );
+        res.json({ mensaje: "Dirección actualizada con éxito." });
+    } catch (err) {
+        res.status(500).json({ error: "Error al actualizar la dirección." });
+    }
+});
+
+// ==========================================================
+// DELETE: Borrar direccion
+// ==========================================================
+app.delete('/api/direcciones/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM direcciones WHERE id = $1', [id]);
+        res.json({ mensaje: "Dirección eliminada correctamente." });
+    } catch (err) {
+        res.status(500).json({ error: "Error al eliminar la dirección." });
+    }
 });
 
 
@@ -635,6 +698,53 @@ app.put('/api/pedidos/:id/estado', async (req, res) => {
   }
 });
 
+//----------------------------------------------------------------------------------FAVORITOS
+
+
+// GET: Obtener solo la lista de IDs de prendas favoritas de un usuario
+app.get('/api/favoritos/:usuarioId', async (req, res) => {
+    const { usuarioId } = req.params;
+    try {
+        const result = await pool.query(
+            'SELECT producto_id FROM favoritos WHERE usuario_id = $1',
+            [usuarioId]
+        );
+        // Devolvemos un array simple de números: [1, 4, 7]
+        const arrayIds = result.rows.map(row => row.producto_id);
+        res.json(arrayIds);
+    } catch (err) {
+        res.status(500).json({ error: "Error al cargar favoritos del usuario." });
+    }
+});
+
+// POST: Guardar una prenda en favoritos
+app.post('/api/favoritos', async (req, res) => {
+    const { usuario_id, producto_id } = req.body;
+    try {
+        // ON CONFLICT DO NOTHING evita errores si le dan doble clic al corazón
+        await pool.query(
+            'INSERT INTO favoritos (usuario_id, producto_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [usuario_id, producto_id]
+        );
+        res.status(201).json({ mensaje: "¡Agregado a favoritos!" });
+    } catch (err) {
+        res.status(500).json({ error: "Error al guardar favorito." });
+    }
+});
+
+// DELETE: Quitar una prenda de favoritos
+app.delete('/api/favoritos/:usuarioId/:productoId', async (req, res) => {
+    const { usuarioId, productoId } = req.params;
+    try {
+        await pool.query(
+            'DELETE FROM favoritos WHERE usuario_id = $1 AND producto_id = $2',
+            [usuarioId, productoId]
+        );
+        res.json({ mensaje: "¡Eliminado de favoritos!" });
+    } catch (err) {
+        res.status(500).json({ error: "Error al eliminar favorito." });
+    }
+});
 
 
 // ---------------------------------------------------------------------------------ENCENDER EL SERVIDOR
